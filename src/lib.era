@@ -1,0 +1,277 @@
+import "std/net";
+
+pub struct Header {
+    pub name: string,
+    pub value: string,
+}
+
+pub struct Request {
+    pub method: string,
+    pub path: string,
+    pub query: string,
+    pub headers: Vec<Header>,
+    pub body: string,
+}
+
+impl Request {
+    pub fn get_header(&self, name: string) -> Option<string> {
+        let mut i: usize = 0;
+        while i < self.headers.len() {
+            let h: Header = self.headers[i].clone();
+            if h.name == name {
+                return Some(h.value.clone());
+            }
+            i += 1;
+        }
+        return None;
+    }
+
+    pub fn query_param(&self, key: string) -> Option<string> {
+        if self.query.len() == 0 {
+            return None;
+        }
+        let pairs: Vec<string> = self.query.split("&");
+        let mut i: usize = 0;
+        while i < pairs.len() {
+            let pair = pairs[i].clone();
+            if pair.contains("=") {
+                let kv: Vec<string> = pair.split("=");
+                if kv.len() >= 2 && kv[0] == key {
+                    return Some(kv[1].clone());
+                }
+            } else if pair == key {
+                return Some("".to_string());
+            }
+            i += 1;
+        }
+        return None;
+    }
+}
+
+pub struct Response {
+    pub status: i64,
+    pub status_text: string,
+    pub headers: Vec<Header>,
+    pub body: string,
+}
+
+impl Response {
+    pub fn new(status: i64, status_text: string, body: string) -> Response {
+        let mut headers = Vec::<Header>::new();
+        let len_str = f"{body.len()}";
+        headers.push(Header {
+            name: "Content-Length".to_string(),
+            value: len_str,
+        });
+        headers.push(Header {
+            name: "Connection".to_string(),
+            value: "close".to_string(),
+        });
+        return Response {
+            status,
+            status_text,
+            headers,
+            body,
+        };
+    }
+
+    pub fn ok(body: string) -> Response {
+        return Response::new(200, "OK".to_string(), body);
+    }
+
+    pub fn json(body: string) -> Response {
+        let resp = Response::ok(body);
+        return resp.with_header("Content-Type".to_string(), "application/json".to_string());
+    }
+
+    pub fn html(body: string) -> Response {
+        let resp = Response::ok(body);
+        return resp.with_header("Content-Type".to_string(), "text/html; charset=utf-8".to_string());
+    }
+
+    pub fn not_found(body: string) -> Response {
+        return Response::new(404, "Not Found".to_string(), body);
+    }
+
+    pub fn with_header(mut self, name: string, value: string) -> Response {
+        self.headers.push(Header { name, value });
+        return self;
+    }
+
+    pub fn to_wire(&self) -> string {
+        let mut sb = StringBuilder::new();
+        let s_str = f"{self.status}";
+        sb.append("HTTP/1.1 ");
+        sb.append(s_str);
+        sb.append(" ");
+        sb.append(self.status_text.clone());
+        sb.append("\r\n");
+
+        let mut i: usize = 0;
+        while i < self.headers.len() {
+            let h: Header = self.headers[i].clone();
+            sb.append(h.name.clone());
+            sb.append(": ");
+            sb.append(h.value.clone());
+            sb.append("\r\n");
+            i += 1;
+        }
+
+        sb.append("\r\n");
+        sb.append(self.body.clone());
+        return sb.to_string();
+    }
+}
+
+pub fn parse_request(raw: string) -> Result<Request, string> {
+    if raw.len() == 0 {
+        return Err("Empty HTTP request".to_string());
+    }
+
+    let mut header_part = raw.clone();
+    let mut body_part = "".to_string();
+
+    if raw.contains("\r\n\r\n") {
+        let parts: Vec<string> = raw.split("\r\n\r\n");
+        header_part = parts[0].clone();
+        if parts.len() > 1 {
+            body_part = parts[1].clone();
+        }
+    } else if raw.contains("\n\n") {
+        let parts: Vec<string> = raw.split("\n\n");
+        header_part = parts[0].clone();
+        if parts.len() > 1 {
+            body_part = parts[1].clone();
+        }
+    }
+
+    let lines: Vec<string> = header_part.split("\n");
+    if lines.len() == 0 {
+        return Err("Malformed HTTP request header".to_string());
+    }
+
+    let request_line = lines[0].trim();
+    let tokens: Vec<string> = request_line.split(" ");
+    if tokens.len() < 2 {
+        return Err("Invalid HTTP request line: " + request_line);
+    }
+
+    let method = tokens[0].clone();
+    let full_path = tokens[1].clone();
+    let mut path = full_path.clone();
+    let mut query = "".to_string();
+
+    if full_path.contains("?") {
+        let path_parts: Vec<string> = full_path.split("?");
+        path = path_parts[0].clone();
+        if path_parts.len() > 1 {
+            query = path_parts[1].clone();
+        }
+    }
+
+    let mut headers = Vec::<Header>::new();
+    let mut l_idx: usize = 1;
+    while l_idx < lines.len() {
+        let line = lines[l_idx].trim();
+        if line.contains(":") {
+            let h_parts: Vec<string> = line.split(":");
+            if h_parts.len() >= 2 {
+                let name = h_parts[0].trim();
+                let val = h_parts[1].trim();
+                headers.push(Header { name, value: val });
+            }
+        }
+        l_idx += 1;
+    }
+
+    return Ok(Request {
+        method,
+        path,
+        query,
+        headers,
+        body: body_part,
+    });
+}
+
+pub fn parse_response(raw: string) -> Result<Response, string> {
+    if raw.len() == 0 {
+        return Err("Empty HTTP response".to_string());
+    }
+
+    let mut header_part = raw.clone();
+    let mut body_part = "".to_string();
+
+    if raw.contains("\r\n\r\n") {
+        let parts: Vec<string> = raw.split("\r\n\r\n");
+        header_part = parts[0].clone();
+        if parts.len() > 1 {
+            body_part = parts[1].clone();
+        }
+    } else if raw.contains("\n\n") {
+        let parts: Vec<string> = raw.split("\n\n");
+        header_part = parts[0].clone();
+        if parts.len() > 1 {
+            body_part = parts[1].clone();
+        }
+    }
+
+    let lines: Vec<string> = header_part.split("\n");
+    if lines.len() == 0 {
+        return Err("Malformed HTTP response header".to_string());
+    }
+
+    let status_line = lines[0].trim();
+    let tokens: Vec<string> = status_line.split(" ");
+    let mut status: i64 = 200;
+    let mut status_text = "OK".to_string();
+
+    if tokens.len() >= 2 {
+        let parsed = tokens[1].parse_i64();
+        match parsed {
+            Ok(code) => { status = code; }
+            Err(_) => {}
+        }
+    }
+    if tokens.len() >= 3 {
+        status_text = tokens[2].clone();
+    }
+
+    let mut headers = Vec::<Header>::new();
+    let mut l_idx: usize = 1;
+    while l_idx < lines.len() {
+        let line = lines[l_idx].trim();
+        if line.contains(":") {
+            let h_parts: Vec<string> = line.split(":");
+            if h_parts.len() >= 2 {
+                let name = h_parts[0].trim();
+                let val = h_parts[1].trim();
+                headers.push(Header { name, value: val });
+            }
+        }
+        l_idx += 1;
+    }
+
+    return Ok(Response {
+        status,
+        status_text,
+        headers,
+        body: body_part,
+    });
+}
+
+pub fn get(addr: string, path: string) -> Result<Response, string> {
+    let client = std::net::connect(addr);
+    let wire_req = "GET " + path + " HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+    std::net::send(client, wire_req);
+    let raw_resp = std::net::recv(client);
+    return parse_response(raw_resp);
+}
+
+pub fn post(addr: string, path: string, content_type: string, body: string) -> Result<Response, string> {
+    let client = std::net::connect(addr);
+    let len_str = f"{body.len()}";
+    let wire_req = "POST " + path + " HTTP/1.1\r\nHost: localhost\r\nContent-Type: " + content_type + "\r\nContent-Length: " + len_str + "\r\nConnection: close\r\n\r\n" + body;
+    std::net::send(client, wire_req);
+    let raw_resp = std::net::recv(client);
+    return parse_response(raw_resp);
+}
